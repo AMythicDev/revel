@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use peekmore::{PeekMore, PeekMoreIterator};
 use std::{ops::Range, str::Chars};
 
 #[derive(Debug)]
@@ -27,43 +28,48 @@ enum Object {
 }
 
 #[derive(Debug)]
-struct Token {
-    ttype: TokenType,
-    word: String,
-    literal: Option<Object>,
-    line: usize,
+struct Token<'a> {
+    start: usize,
+    end: usize,
+    lexeme: &'a str,
 }
 
-struct Scanner {
-    source: String,
-    tokens: Vec<Token>,
+#[derive(Debug)]
+struct TokenResult<'a> {
+    pub line: i32,
+    pub ttype: TokenType,
+    pub inner: Result<Token<'a>, String>,
+}
+
+struct Scanner<'a> {
+    source: &'a String,
+    chars: PeekMoreIterator<Chars<'a>>,
     start: usize,
     current: usize,
-    line: usize,
-    next_char: Option<char>,
+    line: i32,
 }
 
-impl Scanner {
-    fn new(source: String) -> Self {
+impl<'a> Scanner<'a> {
+    fn new(source: &'a String) -> Self {
         Self {
             source,
-            tokens: Vec::with_capacity(2048),
+            chars: source.chars().peekmore(),
             start: 0,
             current: 0,
             line: 1,
-            next_char: None,
         }
     }
 
-    fn add_token(&mut self, ttype: TokenType, literal: Option<Object>) {
-        let word_bytes = self.source.as_bytes();
-        let word = String::from_utf8(word_bytes[self.start..self.current].to_vec()).unwrap();
-        self.tokens.push(Token {
-            ttype,
-            word,
+    fn add_token(&mut self, ttype: TokenType) -> TokenResult<'a> {
+        TokenResult {
             line: self.line,
-            literal,
-        })
+            ttype,
+            inner: Ok(Token {
+                start: self.start,
+                end: self.current,
+                lexeme: &self.source[self.start..self.current],
+            }),
+        }
     }
 
     fn index_source(&self, range: Range<usize>) -> String {
@@ -74,87 +80,74 @@ impl Scanner {
         String::from_utf8(self.source.as_bytes()[self.start..self.current].to_vec()).unwrap()
     }
 
-    fn scan_ident(&mut self, chars: &mut Chars<'_>) {
-        while let Some(c) = chars.next() {
+    fn scan_ident(&mut self) {
+        while let Some(c) = self.chars.next() {
             if c.is_alphanumeric() {
                 self.current += 1;
             } else {
-                self.add_token(TokenType::Identifer, None);
-                self.next_char = Some(c);
+                self.add_token(TokenType::Identifer);
                 return;
             }
         }
-        self.add_token(TokenType::Identifer, None);
-        self.next_char = None;
+        self.add_token(TokenType::Identifer);
     }
 
-    fn scan_decimal(&mut self, chars: &mut Chars<'_>) {
-        let mut has_period = false;
-        while let Some(c) = chars.next() {
+    fn scan_decimal(&mut self) -> TokenResult<'a> {
+        while let Some(c) = self.chars.peek() {
             if c.is_digit(10) {
-                self.current += 1;
-            } else if c == '.' && !has_period {
-                has_period = true;
-                self.current += 1;
-            } else if c == '.' && has_period {
-                panic!("Syntax error");
-            } else {
-                self.add_token(TokenType::Decimal, None);
-                self.next_char = Some(c);
-                return;
+                self.advance();
             }
         }
-        if has_period {
-            self.add_token(
-                TokenType::Decimal,
-                Some(Object::Floating(
-                    self.get_token_from_source().parse::<f64>().unwrap(),
-                )),
-            );
-        } else {
-            self.add_token(TokenType::Decimal, None);
+        if let Some(c) = self.chars.peek() {
+            if *c == '.' {
+                self.advance();
+                while let Some(c) = self.chars.peek() {
+                    if c.is_digit(10) {
+                        self.advance();
+                    }
+                }
+            }
         }
-        self.next_char = None;
+        self.add_token(TokenType::Decimal)
     }
 
-    fn scan_tokens(&mut self) {
-        let source = self.source.clone();
-        let mut chars = source.chars();
-        self.next_char = chars.next();
-        while let Some(c) = self.next_char {
-            self.current += 1;
+    fn scan_tokens(&mut self) -> TokenResult<'a> {
+        self.skip_whitespaces();
+        self.start = self.current;
+        match self.advance() {
+            Some('=') => self.add_token(TokenType::Equal),
+            Some(':') => self.add_token(TokenType::Colon),
+            Some(c) if c.is_digit(10) || c == '.' => self.scan_decimal(),
+            Some(c) if c.is_alphabetic() => self.scan_ident(),
+            _ => Err("No Token found"),
+        }
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        self.current += 1;
+        self.chars.next()
+    }
+
+    fn skip_whitespaces(&mut self) {
+        while let Some(c) = self.chars.peek() {
             match c {
-                '=' => self.add_token(TokenType::Equal, None),
-                '\n' => self.line += 1,
-                ' ' | '\t' | '\r' => {}
-                ':' => self.add_token(TokenType::Colon, None),
-                c if c.is_digit(10) || c == '.' => {
-                    self.scan_decimal(&mut chars);
-                    self.start = self.current;
-                    continue;
+                ' ' | '\t' | '\r' => _ = self.advance(),
+                '\n' => {
+                    self.line += 1;
+                    self.advance();
                 }
-                c if c.is_alphabetic() => {
-                    self.scan_ident(&mut chars);
-                    self.start = self.current;
-                    continue;
-                }
-                _ => {}
+                _ => break,
             }
-            self.start += 1;
-            self.next_char = chars.next();
         }
-        self.add_token(TokenType::EOF, None);
     }
 }
 
-fn main() {
-    println!("Hello, world!");
-}
+fn main() {}
 
 #[test]
 fn scan_identifier() {
     let source = String::from("myvar = .12");
-    let mut scanner = Scanner::new(source);
+    let mut scanner = Scanner::new(&source);
     scanner.scan_tokens();
     dbg!(scanner.tokens);
     panic!();
