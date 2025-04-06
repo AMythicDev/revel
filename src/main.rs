@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use peekmore::{PeekMore, PeekMoreIterator};
-use std::{ops::Range, str::Chars};
+use std::str::Chars;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum TokenType {
     LeftParem,
     RightParen,
@@ -10,8 +10,8 @@ enum TokenType {
     Equal,
     Number,
     EOF,
-    Decimal,
     Colon,
+    String,
     Comma,
     Dot,
     Plus,
@@ -21,27 +21,18 @@ enum TokenType {
     Star,
 }
 
-#[derive(Debug)]
-enum Object {
-    Integer(usize),
-    Floating(f64),
-}
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct Token<'a> {
+    ttype: TokenType,
     start: usize,
     end: usize,
     lexeme: &'a str,
+    line: i32,
 }
 
-#[derive(Debug)]
-struct TokenResult<'a> {
-    pub line: i32,
-    pub ttype: TokenType,
-    pub inner: Result<Token<'a>, String>,
-}
+type TokenResult<'a> = Result<Token<'a>, String>;
 
-struct Scanner<'a> {
+struct Lexer<'a> {
     source: &'a String,
     chars: PeekMoreIterator<Chars<'a>>,
     start: usize,
@@ -49,7 +40,7 @@ struct Scanner<'a> {
     line: i32,
 }
 
-impl<'a> Scanner<'a> {
+impl<'a> Lexer<'a> {
     fn new(source: &'a String) -> Self {
         Self {
             source,
@@ -60,39 +51,28 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn add_token(&mut self, ttype: TokenType) -> TokenResult<'a> {
-        TokenResult {
-            line: self.line,
+    fn token(&mut self, ttype: TokenType) -> TokenResult<'a> {
+        Ok(Token {
             ttype,
-            inner: Ok(Token {
-                start: self.start,
-                end: self.current,
-                lexeme: &self.source[self.start..self.current],
-            }),
-        }
+            line: self.line,
+            start: self.start,
+            end: self.current,
+            lexeme: &self.source[self.start..self.current],
+        })
     }
 
-    fn index_source(&self, range: Range<usize>) -> String {
-        String::from_utf8(self.source.as_bytes()[range].to_vec()).unwrap()
-    }
-
-    fn get_token_from_source(&self) -> String {
-        String::from_utf8(self.source.as_bytes()[self.start..self.current].to_vec()).unwrap()
-    }
-
-    fn scan_ident(&mut self) {
-        while let Some(c) = self.chars.next() {
+    fn scan_ident(&mut self) -> TokenResult<'a> {
+        while let Some(c) = self.chars.peek() {
             if c.is_alphanumeric() {
-                self.current += 1;
+                self.advance();
             } else {
-                self.add_token(TokenType::Identifer);
-                return;
+                break;
             }
         }
-        self.add_token(TokenType::Identifer);
+        self.token(TokenType::Identifer)
     }
 
-    fn scan_decimal(&mut self) -> TokenResult<'a> {
+    fn scan_number(&mut self) -> TokenResult<'a> {
         while let Some(c) = self.chars.peek() {
             if c.is_digit(10) {
                 self.advance();
@@ -108,18 +88,20 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
-        self.add_token(TokenType::Decimal)
+        self.token(TokenType::Number)
     }
 
-    fn scan_tokens(&mut self) -> TokenResult<'a> {
+    fn scan_token(&mut self) -> TokenResult<'a> {
         self.skip_whitespaces();
         self.start = self.current;
         match self.advance() {
-            Some('=') => self.add_token(TokenType::Equal),
-            Some(':') => self.add_token(TokenType::Colon),
-            Some(c) if c.is_digit(10) || c == '.' => self.scan_decimal(),
+            Some('=') => self.token(TokenType::Equal),
+            Some(':') => self.token(TokenType::Colon),
+            Some(c) if c.is_digit(10) || c == '.' => self.scan_number(),
             Some(c) if c.is_alphabetic() => self.scan_ident(),
-            _ => Err("No Token found"),
+            Some('"') => self.scan_string(),
+            None => panic!("No token found"),
+            _ => panic!("Invalid token"),
         }
     }
 
@@ -140,15 +122,192 @@ impl<'a> Scanner<'a> {
             }
         }
     }
+
+    fn scan_string(&mut self) -> TokenResult<'a> {
+        self.start += 1;
+        while let Some(c) = self.chars.peek() {
+            if *c == '"' {
+                break;
+            };
+            self.advance();
+        }
+        if self.chars.peek() == None {
+            panic!("Unterminated string found");
+        } else {
+            let ret = self.token(TokenType::String);
+            self.advance();
+            ret
+        }
+    }
 }
 
 fn main() {}
 
 #[test]
-fn scan_identifier() {
-    let source = String::from("myvar = .12");
-    let mut scanner = Scanner::new(&source);
-    scanner.scan_tokens();
-    dbg!(scanner.tokens);
-    panic!();
+fn single_line_stmt() {
+    let source = String::from("foo: double = .12");
+    let mut scanner = Lexer::new(&source);
+
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Identifer,
+            start: 0,
+            end: 3,
+            lexeme: "foo",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Colon,
+            start: 3,
+            end: 4,
+            lexeme: ":",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Identifer,
+            start: 5,
+            end: 11,
+            lexeme: "double",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Equal,
+            start: 12,
+            end: 13,
+            lexeme: "=",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Number,
+            start: 14,
+            end: 17,
+            lexeme: ".12",
+            line: 1
+        }
+    );
+}
+
+#[test]
+fn ignore_initial_line_breaks() {
+    let source = String::from("\n\nbar: int = 100");
+    let mut scanner = Lexer::new(&source);
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Identifer,
+            start: 2,
+            end: 5,
+            lexeme: "bar",
+            line: 3
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Colon,
+            start: 5,
+            end: 6,
+            lexeme: ":",
+            line: 3
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Identifer,
+            start: 7,
+            end: 10,
+            lexeme: "int",
+            line: 3
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Equal,
+            start: 11,
+            end: 12,
+            lexeme: "=",
+            line: 3
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Number,
+            start: 13,
+            end: 16,
+            lexeme: "100",
+            line: 3
+        }
+    );
+}
+
+#[test]
+fn scan_string() {
+    let source = String::from("bar: string = \"hello world\"");
+    let mut scanner = Lexer::new(&source);
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Identifer,
+            start: 0,
+            end: 3,
+            lexeme: "bar",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Colon,
+            start: 3,
+            end: 4,
+            lexeme: ":",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Identifer,
+            start: 5,
+            end: 11,
+            lexeme: "string",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::Equal,
+            start: 12,
+            end: 13,
+            lexeme: "=",
+            line: 1
+        }
+    );
+    assert_eq!(
+        scanner.scan_token().unwrap(),
+        Token {
+            ttype: TokenType::String,
+            start: 15,
+            end: 26,
+            lexeme: "hello world",
+            line: 1
+        }
+    );
 }
